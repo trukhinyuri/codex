@@ -777,26 +777,8 @@ impl TurnContext {
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
-        let supported_reasoning_levels = model_info
-            .supported_reasoning_levels
-            .iter()
-            .map(|preset| preset.effort.clone())
-            .collect::<Vec<_>>();
-        let reasoning_effort = if let Some(current_reasoning_effort) = self.reasoning_effort() {
-            if supported_reasoning_levels.contains(current_reasoning_effort) {
-                Some(current_reasoning_effort.clone())
-            } else {
-                supported_reasoning_levels
-                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                    .cloned()
-                    .or_else(|| model_info.default_reasoning_level.clone())
-            }
-        } else {
-            supported_reasoning_levels
-                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                .cloned()
-                .or_else(|| model_info.default_reasoning_level.clone())
-        };
+        let reasoning_effort =
+            model_info.resolve_reasoning_effort_for_model_switch(self.reasoning_effort());
         config.model_reasoning_effort = reasoning_effort.clone();
 
         let available_models = models_manager

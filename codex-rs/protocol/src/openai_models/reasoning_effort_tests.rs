@@ -50,3 +50,41 @@ fn preserves_native_efforts_and_translates_persistent_mode() {
         ReasoningEffort::Custom("disabled".to_string()),
     );
 }
+
+#[test]
+fn resolves_reasoning_effort_for_model_switch_with_clamping_and_default_preference() {
+    use ReasoningEffort::High;
+    use ReasoningEffort::Low;
+    use ReasoningEffort::Max;
+    use ReasoningEffort::Medium;
+    use ReasoningEffort::Minimal;
+    use ReasoningEffort::Ultra;
+    use ReasoningEffort::XHigh;
+
+    let mut model = test_model(/*spec*/ None);
+    model.supported_reasoning_levels = [Low, Medium, High, XHigh]
+        .into_iter()
+        .map(|effort| ReasoningEffortPreset {
+            effort,
+            description: String::new(),
+        })
+        .collect();
+    model.default_reasoning_level = Some(High);
+
+    assert_eq!(
+        model.resolve_reasoning_effort_for_model_switch(Some(&Max)),
+        Some(XHigh),
+    );
+    assert_eq!(
+        model.resolve_reasoning_effort_for_model_switch(Some(&Ultra)),
+        Some(XHigh),
+    );
+    assert_eq!(
+        model.resolve_reasoning_effort_for_model_switch(Some(&Minimal)),
+        Some(High),
+    );
+    assert_eq!(
+        model.resolve_reasoning_effort_for_model_switch(/*current_effort*/ None),
+        Some(High),
+    );
+}
