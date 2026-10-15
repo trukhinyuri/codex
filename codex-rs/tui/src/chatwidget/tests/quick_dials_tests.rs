@@ -5,6 +5,139 @@ use crate::chatwidget::quick_dials::QuickDialEditorTarget;
 use codex_config::types::QuickDial;
 
 #[tokio::test]
+async fn current_settings_offer_model_permissions_and_status_layouts() {
+    let (mut chat, mut events, _ops) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5.5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.local_settings.tui.terminal_title = Some(vec![
+        "model-name".into(),
+        "project".into(),
+        "model-name".into(),
+    ]);
+    chat.local_settings.tui.status_line = Some(vec![
+        "model-name".into(),
+        "project-root".into(),
+        "model-name".into(),
+    ]);
+    chat.local_settings.tui.status_line_use_colors = false;
+    chat.set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+        PermissionProfile::workspace_write(),
+        ActivePermissionProfile::new(":workspace"),
+    ))
+    .unwrap();
+
+    chat.open_quick_dial_prefills();
+
+    assert_chatwidget_snapshot!(
+        "saved_quick_dials_source",
+        render_bottom_popup(&chat, /*width*/ 80)
+    );
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Enter.into());
+    assert_matches!(
+        events.try_recv(),
+        Ok(AppEvent::OpenQuickDialEditor {
+            target: QuickDialEditorTarget::PickSlot,
+            dial: Some(QuickDial { input, label: None }),
+        }) if input == "/permissions :workspace --approval-policy=on-request --reviewer=user"
+    );
+
+    chat.open_quick_dial_prefills();
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Enter.into());
+    assert_matches!(
+        events.try_recv(),
+        Ok(AppEvent::OpenQuickDialEditor {
+            target: QuickDialEditorTarget::PickSlot,
+            dial: Some(QuickDial { input, label: None }),
+        }) if input == "/title model project-name model"
+    );
+
+    chat.open_quick_dial_prefills();
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Enter.into());
+    assert_matches!(
+        events.try_recv(),
+        Ok(AppEvent::OpenQuickDialEditor {
+            target: QuickDialEditorTarget::PickSlot,
+            dial: Some(QuickDial { input, label: None }),
+        }) if input == "/statusline model project-name model --no-colors"
+    );
+
+    chat.local_settings.tui.terminal_title = Some(Vec::new());
+    chat.local_settings.tui.status_line = Some(Vec::new());
+    chat.local_settings.tui.status_line_use_colors = true;
+    assert_eq!(
+        chat.current_terminal_title_quick_dial(),
+        Ok(QuickDial {
+            input: "/title --clear".into(),
+            label: None,
+        })
+    );
+    assert_eq!(
+        chat.current_status_line_quick_dial(),
+        Ok(QuickDial {
+            input: "/statusline --clear --colors".into(),
+            label: None,
+        })
+    );
+
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Custom("removed-effort".into())));
+    chat.terminal_title_invalid_items_warned
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    chat.local_settings.tui.terminal_title = Some(vec!["removed-title-item".into()]);
+    chat.local_settings.tui.status_line = Some(vec!["model".into()]);
+    chat.config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    chat.open_quick_dial_prefills();
+    assert_chatwidget_snapshot!(
+        "saved_quick_dials_source_unavailable_model",
+        render_bottom_popup(&chat, /*width*/ 80)
+    );
+    chat.handle_key_event(KeyCode::Enter.into());
+    assert_matches!(
+        events.try_recv(),
+        Ok(AppEvent::OpenQuickDialEditor {
+            target: QuickDialEditorTarget::PickSlot,
+            dial: Some(QuickDial { input, label: None }),
+        }) if input == "/permissions :workspace --approval-policy=on-request --reviewer=auto_review"
+    );
+
+    let granular = AskForApproval::Granular {
+        sandbox_approval: false,
+        rules: true,
+        skill_approval: false,
+        request_permissions: true,
+        mcp_elicitations: false,
+    };
+    chat.config
+        .permissions
+        .approval_policy
+        .set(granular.to_core())
+        .expect("set granular approval policy");
+    chat.config.approvals_reviewer = ApprovalsReviewer::User;
+    chat.set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+        PermissionProfile::workspace_write(),
+        ActivePermissionProfile::new("team review"),
+    ))
+    .expect("set named permission profile");
+    chat.open_quick_dial_prefills();
+    chat.handle_key_event(KeyCode::Enter.into());
+    let policy = serde_json::to_string(&granular).expect("granular policy serializes");
+    assert_matches!(
+        events.try_recv(),
+        Ok(AppEvent::OpenQuickDialEditor {
+            target: QuickDialEditorTarget::PickSlot,
+            dial: Some(QuickDial { input, label: None }),
+        }) if input == format!(
+            "/permissions 'team review' --approval-policy='{policy}' --reviewer=user"
+        )
+    );
+}
+
+#[tokio::test]
 async fn saved_quick_dials_save_and_clear_picker_snapshots() {
     const DRAFT: &str = "Review the current changes\nfor safety  ";
     let (mut chat, mut events, _ops) =

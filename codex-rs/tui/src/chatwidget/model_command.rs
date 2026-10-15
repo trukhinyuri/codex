@@ -2,15 +2,16 @@
 
 use super::ChatWidget;
 use super::session_model_selection::AstraModelPickerAction;
+use super::slash_command_args;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 
 #[derive(Default)]
-struct ModelCommandArgs<'a> {
-    model: Option<&'a str>,
-    effort: Option<&'a str>,
-    speed: Option<&'a str>,
+struct ModelCommandArgs {
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<String>,
 }
 
 struct ModelCommand {
@@ -19,62 +20,26 @@ struct ModelCommand {
     service_tier: Option<String>,
 }
 
-fn parse_model_command_args(args: &str) -> Result<ModelCommandArgs<'_>, String> {
-    let mut parsed = ModelCommandArgs::default();
-    let mut words = args.split_whitespace().peekable();
-    while let Some(word) = words.next() {
-        let (setting, inline_value) = word
-            .split_once('=')
-            .map_or((word, None), |(setting, value)| (setting, Some(value)));
-        match setting {
-            "--reasoning" => {
-                set_model_setting(&mut parsed.effort, setting, inline_value, &mut words)?;
-            }
-            "--speed" => {
-                set_model_setting(&mut parsed.speed, setting, inline_value, &mut words)?;
-            }
-            _ if word.starts_with("--") => {
-                return Err(format!(
-                    "Unknown model setting '{setting}'. Expected '--reasoning=<level>' or '--speed=<tier>'."
-                ));
-            }
-            _ if parsed.model.replace(word).is_some() => {
-                return Err(format!(
-                    "Unexpected argument '{word}'. Use '--reasoning=<level>' or '--speed=<tier>'."
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok(parsed)
-}
-
-fn set_model_setting<'a>(
-    target: &mut Option<&'a str>,
-    setting: &str,
-    inline_value: Option<&'a str>,
-    words: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
-) -> Result<(), String> {
-    let value = match inline_value {
-        Some("") => None,
-        Some(value) => Some(value),
-        None => words.next_if(|word| !word.starts_with("--")),
-    }
-    .ok_or_else(|| format!("Model setting '{setting}' requires a value."))?;
-    if target.replace(value).is_some() {
+fn parse_model_command_args(args: &str) -> Result<ModelCommandArgs, String> {
+    let parsed = slash_command_args::parse(args, &["--reasoning", "--speed"], &[], &[])?;
+    if let Some(unexpected) = parsed.positionals.get(1) {
         return Err(format!(
-            "Model setting '{setting}' was provided more than once."
+            "Unexpected argument '{unexpected}'. Use '--reasoning=<level>' or '--speed=<tier>'."
         ));
     }
-    Ok(())
+    Ok(ModelCommandArgs {
+        model: parsed.positionals.first().cloned(),
+        effort: parsed.value("--reasoning").map(str::to_owned),
+        speed: parsed.value("--speed").map(str::to_owned),
+    })
 }
 
 fn resolve_reasoning_effort(
     chat: &ChatWidget,
-    args: &ModelCommandArgs<'_>,
+    args: &ModelCommandArgs,
     model: &ModelPreset,
 ) -> Result<ReasoningEffort, String> {
-    let Some(effort) = args.effort else {
+    let Some(effort) = args.effort.as_deref() else {
         return Ok(if args.model.is_none() {
             chat.current_reasoning_effort()
                 .unwrap_or_else(|| model.default_reasoning_effort.clone())
@@ -161,7 +126,7 @@ fn resolve_model_command(chat: &ChatWidget, args: &str) -> Result<ModelCommand, 
     }
     let model_name = args
         .model
-        .map(str::to_owned)
+        .clone()
         .unwrap_or_else(|| chat.current_model().to_owned());
     let Some(model) =
         chat.model_catalog.models.iter().find(|model| {
@@ -175,7 +140,7 @@ fn resolve_model_command(chat: &ChatWidget, args: &str) -> Result<ModelCommand, 
     Ok(ModelCommand {
         model: model.model.clone(),
         effort: resolve_reasoning_effort(chat, &args, model)?,
-        service_tier: resolve_service_tier(chat, args.speed, model)?,
+        service_tier: resolve_service_tier(chat, args.speed.as_deref(), model)?,
     })
 }
 

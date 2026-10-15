@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::config::ManagedFeatures;
 use crate::context::ContextualUserFragment;
 use crate::context::ImageResizeNotice;
@@ -370,6 +372,7 @@ async fn prepare_image(
         thread_id: origin.thread_id.to_owned(),
         ephemeral: origin.ephemeral,
         file_name: None,
+        tags: HashMap::new(),
         data: prepared.encoded.bytes.to_vec(),
     };
     *image = match image_store.upload(request).await {

@@ -1116,6 +1116,26 @@ pub struct PluginConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
 
+    /// Stable, unique identifier of a ChatGPT-hosted remote plugin.
+    /// Availability to the requesting user is determined by Plugin Service at
+    /// provisioning time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_plugin_id: Option<String>,
+
+    /// Release identifier used to pin the remote plugin to a specific release.
+    /// Omission leaves release selection unchanged.
+    /// Core stores this metadata without selecting or fetching a release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_id: Option<String>,
+
+    /// Provisioning metadata. Omission does not request provisioning.
+    /// Only applies with `remote_plugin_id` and Plugin Service availability to the
+    /// requesting user at provisioning time. Effective enablement, trusted
+    /// provisioning policy, and authentication and authorization restrictions still apply.
+    /// This value is not trusted authorization and does not trigger provisioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_provision: Option<bool>,
+
     /// Per-MCP-server policy overlays for MCP servers contributed by this plugin.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mcp_servers: HashMap<String, PluginMcpServerConfig>,

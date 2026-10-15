@@ -174,6 +174,9 @@ impl SlashCommand {
             self,
             SlashCommand::Review
                 | SlashCommand::Model
+                | SlashCommand::Permissions
+                | SlashCommand::Title
+                | SlashCommand::Statusline
                 | SlashCommand::Rename
                 | SlashCommand::New
                 | SlashCommand::Clear
