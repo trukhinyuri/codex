@@ -204,28 +204,47 @@ async fn endpoint_products() -> EndpointInspection {
                 "com.jamf.protect.security-extension",
             ),
         ];
-        let Some(output) = product_command("/usr/bin/systemextensionsctl", &["list"])
+        if let Some(output) = product_command("/usr/bin/systemextensionsctl", &["list"])
             .await
             .filter(|output| output.status.success())
-        else {
-            return EndpointInspection::Unavailable;
-        };
-        EndpointInspection::Complete(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut columns = line.split_whitespace();
-                    if columns.next() != Some("*") || columns.next() != Some("*") {
-                        return None;
-                    }
-                    let team = columns.next()?;
-                    let bundle = columns.next()?;
-                    PRODUCTS.iter().find_map(|&(name, signer, identifier)| {
-                        (team == signer && bundle == identifier).then_some(name)
+        {
+            return EndpointInspection::Complete(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut columns = line.split_whitespace();
+                        if columns.next() != Some("*") || columns.next() != Some("*") {
+                            return None;
+                        }
+                        let team = columns.next()?;
+                        let bundle = columns.next()?;
+                        PRODUCTS.iter().find_map(|&(name, signer, identifier)| {
+                            (team == signer && bundle == identifier).then_some(name)
+                        })
                     })
-                })
-                .collect(),
+                    .collect(),
+            );
+        }
+        if let Some(output) = product_command(
+            "/usr/bin/plutil",
+            &[
+                "-convert",
+                "xml1",
+                "-o",
+                "-",
+                "/Library/SystemExtensions/db.plist",
+            ],
         )
+        .await
+        .filter(|output| output.status.success())
+            && let Some(products) = parse_macos_system_extensions_xml(
+                &String::from_utf8_lossy(&output.stdout),
+                PRODUCTS,
+            )
+        {
+            return EndpointInspection::Complete(products);
+        }
+        EndpointInspection::Unavailable
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -247,6 +266,63 @@ async fn product_command(program: impl AsRef<OsStr>, args: &[&str]) -> Option<Ou
         .ok()?
         .ok()
         .filter(|output| output.stdout.len() <= MAX_PRODUCT_OUTPUT_BYTES)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_system_extensions_xml<'a>(
+    xml: &str,
+    products: &[(&'a str, &str, &str)],
+) -> Option<Vec<&'a str>> {
+    if !xml.contains("<plist") {
+        return None;
+    }
+    let mut detected = Vec::new();
+    let mut identifier: Option<&str> = None;
+    let mut team_id: Option<&str> = None;
+    let mut state: Option<&str> = None;
+    let mut pending_key: Option<&str> = None;
+
+    for raw_line in xml.lines() {
+        let line = raw_line.trim();
+        if line == "</dict>" && raw_line.starts_with("\t\t</dict>") {
+            if state == Some("activated_enabled")
+                && let (Some(team), Some(bundle)) = (team_id, identifier)
+                && let Some(product) = products.iter().find_map(|&(name, signer, id)| {
+                    (team == signer && bundle == id).then_some(name)
+                })
+                && !detected.contains(&product)
+            {
+                detected.push(product);
+            }
+            identifier = None;
+            team_id = None;
+            state = None;
+            pending_key = None;
+            continue;
+        }
+        if raw_line.starts_with("\t\t\t<key>")
+            && let Some(key) = line
+                .strip_prefix("<key>")
+                .and_then(|rest| rest.strip_suffix("</key>"))
+        {
+            pending_key = Some(key);
+            continue;
+        }
+        if let Some(key) = pending_key.take()
+            && raw_line.starts_with("\t\t\t<string>")
+            && let Some(val) = line
+                .strip_prefix("<string>")
+                .and_then(|rest| rest.strip_suffix("</string>"))
+        {
+            match key {
+                "identifier" => identifier = Some(val),
+                "teamID" => team_id = Some(val),
+                "state" => state = Some(val),
+                _ => {}
+            }
+        }
+    }
+    Some(detected)
 }
 
 #[cfg(test)]

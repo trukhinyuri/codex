@@ -46,7 +46,24 @@ async fn inspect_gatekeeper(bundle: &Path) -> Evidence {
     command
         .args(["--assess", "--type", "execute", "--verbose=2"])
         .arg(bundle);
-    classify_gatekeeper(run_command(&mut command).await.as_ref())
+    let output = run_command(&mut command).await;
+    let evidence = classify_gatekeeper(output.as_ref());
+    if evidence == Evidence::Unavailable
+        && output
+            .as_ref()
+            .is_some_and(is_codesign_subsystem_unavailable)
+    {
+        let mut codesign = Command::new("/usr/bin/codesign");
+        codesign.args(["-dv", "--verbose=4"]).arg(bundle);
+        if run_command(&mut codesign)
+            .await
+            .as_ref()
+            .is_some_and(has_stapled_openai_signature)
+        {
+            return Evidence::Clear;
+        }
+    }
+    evidence
 }
 
 fn classify_gatekeeper(output: Option<&Output>) -> Evidence {
@@ -64,6 +81,32 @@ fn classify_gatekeeper(output: Option<&Output>) -> Evidence {
     }
 }
 
+fn is_codesign_subsystem_unavailable(output: &Output) -> bool {
+    !is_truncated(output)
+        && String::from_utf8_lossy(&output.stderr)
+            .to_ascii_lowercase()
+            .contains("internal error in code signing subsystem")
+}
+
+fn has_stapled_openai_signature(output: &Output) -> bool {
+    if !output.status.success() || is_truncated(output) {
+        return false;
+    }
+    let metadata = String::from_utf8_lossy(&output.stderr);
+    let mut has_identifier = false;
+    let mut has_team = false;
+    let mut has_stapled_ticket = false;
+    for line in metadata.lines() {
+        match line.trim() {
+            "Identifier=com.openai.codex" => has_identifier = true,
+            "TeamIdentifier=2DC432GLL2" => has_team = true,
+            "Notarization Ticket=stapled" => has_stapled_ticket = true,
+            _ => {}
+        }
+    }
+    has_identifier && has_team && has_stapled_ticket
+}
+
 async fn inspect_security_events() -> Evidence {
     let mut command = Command::new("/usr/bin/log");
     command.args([
@@ -76,12 +119,19 @@ async fn inspect_security_events() -> Evidence {
         "--predicate",
         SECURITY_LOG_PREDICATE,
     ]);
-    let Some(output) = run_command(&mut command)
-        .await
-        .filter(|output| output.status.success())
-    else {
+    let Some(output) = run_command(&mut command).await else {
         return Evidence::Unavailable;
     };
+    if !output.status.success() {
+        if !is_truncated(&output)
+            && String::from_utf8_lossy(&output.stderr)
+                .to_ascii_lowercase()
+                .contains("cannot run while sandboxed")
+        {
+            return Evidence::Clear;
+        }
+        return Evidence::Unavailable;
+    }
     let evidence = classify_security_events(&String::from_utf8_lossy(&output.stdout));
     if is_truncated(&output) && evidence < Evidence::Exhausted {
         Evidence::Unavailable

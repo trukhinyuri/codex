@@ -3,6 +3,8 @@ use super::Evidence;
 use super::classify_gatekeeper;
 use super::classify_security_events;
 use super::enforcement_check;
+use super::has_stapled_openai_signature;
+use super::is_codesign_subsystem_unavailable;
 use pretty_assertions::assert_eq;
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
@@ -64,4 +66,32 @@ fn exhaustion_and_unavailable_history_have_actionable_warnings() {
                 .is_some_and(|value| value.contains(remedy))
         );
     }
+}
+
+#[test]
+fn sandbox_codesign_fallback_accepts_only_stapled_openai_bundle() {
+    let spctl_err = Output {
+        status: ExitStatus::from_raw(1 << 8),
+        stdout: Vec::new(),
+        stderr: b"/Applications/ChatGPT.app: internal error in Code Signing subsystem\n".to_vec(),
+    };
+    assert!(is_codesign_subsystem_unavailable(&spctl_err));
+
+    let valid_codesign = Output {
+        status: ExitStatus::from_raw(0),
+        stdout: Vec::new(),
+        stderr:
+            b"Identifier=com.openai.codex\nTeamIdentifier=2DC432GLL2\nNotarization Ticket=stapled\n"
+                .to_vec(),
+    };
+    assert!(has_stapled_openai_signature(&valid_codesign));
+
+    let untrusted_codesign = Output {
+        status: ExitStatus::from_raw(0),
+        stdout: Vec::new(),
+        stderr:
+            b"Identifier=com.openai.codex\nTeamIdentifier=OTHERTEAM\nNotarization Ticket=stapled\n"
+                .to_vec(),
+    };
+    assert!(!has_stapled_openai_signature(&untrusted_codesign));
 }
