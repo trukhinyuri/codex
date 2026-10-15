@@ -4851,6 +4851,23 @@ async fn turn_context_with_model_updates_model_fields() {
         updated.config.model_reasoning_effort,
         Some(ReasoningEffortConfig::Medium)
     );
+
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        let mut selected = settings.selected().clone();
+        selected.collaboration_mode.settings.reasoning_effort = Some(ReasoningEffortConfig::Max);
+        *settings = ResolvedStepSettings::new(
+            Arc::new(selected),
+            Arc::clone(&settings.model_info),
+            /*fast_mode_enabled*/ true,
+        );
+    });
+    let clamped = turn_context
+        .with_model("gpt-5.5".to_string(), &session.services.models_manager)
+        .await;
+    assert_eq!(
+        clamped.reasoning_effort(),
+        Some(&ReasoningEffortConfig::XHigh)
+    );
 }
 
 #[test]
