@@ -1870,7 +1870,6 @@ impl ThreadRequestProcessor {
             return Err(invalid_request("thread name must not be empty"));
         };
 
-        let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
         self.thread_manager
             .update_thread_metadata(
                 thread_id,

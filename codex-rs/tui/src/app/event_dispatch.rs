@@ -2954,17 +2954,27 @@ impl App {
                     ThreadTitleDestination::Automatic => {
                         if let Ok(response) = result
                             && let Some(title) = super::thread_title::parse_thread_title(&response)
-                            && let Ok(thread) = app_server
-                                .thread_read(thread_id, /*include_turns*/ false)
-                                .await
+                            && let Ok(Ok(thread)) = tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                app_server.thread_read(thread_id, /*include_turns*/ false),
+                            )
+                            .await
                             && thread.name.is_none()
                         {
-                            match app_server.thread_set_name(thread_id, title.clone()).await {
-                                Ok(()) => self
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                app_server.thread_set_name(thread_id, title.clone()),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => self
                                     .chat_widget
                                     .on_thread_name_updated(thread_id, Some(title)),
-                                Err(error) => {
+                                Ok(Err(error)) => {
                                     tracing::debug!(%error, "failed to apply generated thread title");
+                                }
+                                Err(_) => {
+                                    tracing::debug!("timed out applying generated thread title");
                                 }
                             }
                         }
