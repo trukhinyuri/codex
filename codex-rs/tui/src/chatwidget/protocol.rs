@@ -473,7 +473,11 @@ impl ChatWidget {
                 {
                     self.speak_completed_realtime_delegation(&notification.turn.id, item);
                 }
-                if replay_kind.is_none() {
+                let active_goal_continuing = self
+                    .current_goal_status
+                    .as_ref()
+                    .is_some_and(GoalStatusState::is_active);
+                if replay_kind.is_none() && !active_goal_continuing {
                     question_drafts = self.take_question_drafts();
                 }
                 self.last_non_retry_error = None;
