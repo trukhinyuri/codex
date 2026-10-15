@@ -359,9 +359,7 @@ fn prepare_aliases_in_home(
             {
                 return Ok(reused);
             }
-            let fallback_root =
-                std::env::temp_dir().join(format!("codex-arg0-{}", std::env::consts::OS));
-            create_aliases_in_temp_root(&fallback_root, existing_path, None).or(Err(err))
+            Err(err)
         }
         Err(err) => Err(err),
     }
@@ -472,9 +470,6 @@ fn reuse_existing_path_entry_for_codex_aliases(
     codex_home: &Path,
     existing_path: Option<&std::ffi::OsStr>,
 ) -> std::io::Result<Option<(Arg0PathEntryGuard, OsString)>> {
-    let Some(existing_path) = existing_path else {
-        return Ok(None);
-    };
     let current_exe = std::env::current_exe()?;
     let os_root = codex_home
         .join("tmp")
@@ -483,26 +478,50 @@ fn reuse_existing_path_entry_for_codex_aliases(
     let canonical_os_root = os_root.canonicalize().ok();
     let canonical_legacy_root = legacy_root.canonicalize().ok();
 
-    for entry in std::env::split_paths(existing_path) {
-        let under_arg0_root = entry.starts_with(&os_root)
-            || entry.starts_with(&legacy_root)
-            || entry.canonicalize().ok().is_some_and(|canon| {
-                canonical_os_root
-                    .as_ref()
-                    .is_some_and(|root| canon.starts_with(root))
-                    || canonical_legacy_root
+    if let Some(existing_path) = existing_path {
+        for entry in std::env::split_paths(existing_path) {
+            let under_arg0_root = entry.starts_with(&os_root)
+                || entry.starts_with(&legacy_root)
+                || entry.canonicalize().ok().is_some_and(|canon| {
+                    canonical_os_root
                         .as_ref()
                         .is_some_and(|root| canon.starts_with(root))
-            });
-        if !under_arg0_root {
-            continue;
+                        || canonical_legacy_root
+                            .as_ref()
+                            .is_some_and(|root| canon.starts_with(root))
+                });
+            if !under_arg0_root {
+                continue;
+            }
+            if has_reusable_codex_aliases(&entry, &current_exe) {
+                let paths = build_dispatch_paths(&entry, Some(current_exe));
+                return Ok(Some((
+                    Arg0PathEntryGuard::reused(paths),
+                    existing_path.to_os_string(),
+                )));
+            }
         }
-        if has_reusable_codex_aliases(&entry, &current_exe) {
-            let paths = build_dispatch_paths(&entry, Some(current_exe));
-            return Ok(Some((
-                Arg0PathEntryGuard::reused(paths),
-                existing_path.to_os_string(),
-            )));
+    }
+
+    for root in [&os_root, &legacy_root] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if !candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("codex-arg0"))
+            {
+                continue;
+            }
+            if has_reusable_codex_aliases(&candidate, &current_exe) {
+                let updated_path =
+                    path_env_with_entry(&candidate, existing_path.map(std::ffi::OsStr::to_os_string));
+                let paths = build_dispatch_paths(&candidate, Some(current_exe));
+                return Ok(Some((Arg0PathEntryGuard::reused(paths), updated_path)));
+            }
         }
     }
 
@@ -980,24 +999,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn falls_back_to_system_temp_when_codex_home_is_read_only_without_matching_aliases()
+    fn reuses_existing_home_alias_dir_when_codex_home_is_read_only_and_path_omitted()
     -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
 
         let home = tempfile::tempdir()?;
-        struct RestorePermissions<'a>(&'a Path);
+        let (_parent_guard, _initial_path) = super::prepare_aliases_in_home(home.path(), None)?;
+        let temp_root = home
+            .path()
+            .join("tmp")
+            .join(format!("arg0-{}", std::env::consts::OS));
+        struct RestorePermissions<'a>(&'a Path, &'a Path);
         impl Drop for RestorePermissions<'_> {
             fn drop(&mut self) {
-                let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+                let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o700));
+                let _ = fs::set_permissions(self.1, fs::Permissions::from_mode(0o755));
             }
         }
-        let _restore = RestorePermissions(home.path());
+        let _restore = RestorePermissions(&temp_root, home.path());
+        fs::set_permissions(&temp_root, fs::Permissions::from_mode(0o555))?;
         fs::set_permissions(home.path(), fs::Permissions::from_mode(0o555))?;
 
         let (_guard, updated_path) = super::prepare_aliases_in_home(home.path(), None)?;
         let first_entry = std::env::split_paths(&updated_path)
             .next()
-            .expect("fallback PATH entry");
+            .expect("reused PATH entry");
+        assert!(first_entry.starts_with(home.path()));
         assert!(first_entry.join(super::APPLY_PATCH_ARG0).exists());
         Ok(())
     }

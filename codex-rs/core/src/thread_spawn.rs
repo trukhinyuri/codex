@@ -81,7 +81,8 @@ pub(crate) async fn spawn(
     let role_name = agent_type
         .as_deref()
         .map(str::trim)
-        .filter(|role| !role.is_empty());
+        .filter(|role| !role.is_empty())
+        .or_else(|| infer_role_from_task_name(&task_name, &turn.config.agent_roles));
     let prepared = prepare_agent_spawn_config(
         session,
         step_context,
@@ -164,4 +165,31 @@ pub(crate) async fn spawn(
         config,
         task_name,
     })
+}
+
+fn infer_role_from_task_name<'a>(
+    task_name: &str,
+    agent_roles: &'a std::collections::BTreeMap<String, crate::config::AgentRoleConfig>,
+) -> Option<&'a str> {
+    if agent_roles.is_empty() {
+        return None;
+    }
+    let normalized = task_name.trim().to_ascii_lowercase();
+    if let Some((role, _)) = agent_roles.get_key_value(normalized.as_str()) {
+        return Some(role.as_str());
+    }
+    let mut best_match: Option<&str> = None;
+    for role in agent_roles.keys() {
+        if role == crate::agent::role::DEFAULT_ROLE_NAME {
+            continue;
+        }
+        let prefix = format!("{role}_");
+        let suffix = format!("_{role}");
+        if normalized.starts_with(&prefix) || normalized.ends_with(&suffix) {
+            if best_match.is_none_or(|prev| role.len() > prev.len()) {
+                best_match = Some(role.as_str());
+            }
+        }
+    }
+    best_match
 }

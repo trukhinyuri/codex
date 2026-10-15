@@ -943,7 +943,15 @@ async fn handle_any_tool(
 fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {
     if invocation.tool_name.name == "spawn_agent"
         && (invocation.tool_name.is_default_namespace()
-            || invocation.tool_name.namespace.as_deref() == Some(MULTI_AGENT_V1_NAMESPACE))
+            || invocation.tool_name.namespace.as_deref() == Some(MULTI_AGENT_V1_NAMESPACE)
+            || invocation.tool_name.namespace.as_deref() == Some("collaboration")
+            || invocation.tool_name.namespace.as_deref()
+                == invocation
+                    .turn
+                    .config
+                    .multi_agent_v2
+                    .tool_namespace
+                    .as_deref())
     {
         return HookToolName::spawn_agent();
     }

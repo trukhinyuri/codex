@@ -1045,7 +1045,7 @@ impl ModelClient {
             self.state.model_verbosity.or(model_info.default_verbosity)
         } else {
             if self.state.model_verbosity.is_some() {
-                warn!(
+                tracing::debug!(
                     "model_verbosity is set but ignored as the model does not support verbosity: {}",
                     model_info.slug
                 );

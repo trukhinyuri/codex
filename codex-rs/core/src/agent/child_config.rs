@@ -65,13 +65,23 @@ pub(crate) async fn prepare_agent_spawn_config(
         step_context,
         &mut config,
         options.model,
-        options.reasoning_effort,
+        options.reasoning_effort.clone(),
     )
     .await?;
     if !options.full_history_fork
         || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
     {
         apply_spawn_agent_role(session, &mut config, options.role_name).await?;
+        if options.model.is_some() || options.reasoning_effort.is_some() {
+            apply_requested_spawn_agent_model_overrides(
+                session,
+                step_context,
+                &mut config,
+                options.model,
+                options.reasoning_effort.clone(),
+            )
+            .await?;
+        }
         if options.version == SpawnConfigVersion::V2
             && options.full_history_fork
             && config.developer_instructions.is_none()

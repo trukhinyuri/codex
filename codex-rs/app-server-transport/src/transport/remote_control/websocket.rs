@@ -616,6 +616,8 @@ impl RemoteControlWebsocket {
             return true;
         };
 
+        let mut logged_waiting_for_auth = false;
+        let mut retry_delay = REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL;
         loop {
             if !matches!(
                 *self.desired_state_rx.borrow(),
@@ -626,16 +628,24 @@ impl RemoteControlWebsocket {
             let auth = match load_remote_control_auth(&self.auth_manager).await {
                 Ok(auth) => auth,
                 Err(err) => {
-                    info!(
-                        error = %err,
-                        "waiting to resolve remote control preference until authentication is available"
-                    );
-                    if !self.wait_for_preference_resolution_retry().await {
+                    if !logged_waiting_for_auth {
+                        logged_waiting_for_auth = true;
+                        info!(
+                            error = %err,
+                            "waiting to resolve remote control preference until authentication is available"
+                        );
+                    }
+                    if !self
+                        .wait_for_preference_resolution_retry_with_delay(retry_delay)
+                        .await
+                    {
                         return false;
                     }
+                    retry_delay = (retry_delay * 2).min(REMOTE_CONTROL_RECONNECT_BACKOFF_CAP);
                     continue;
                 }
             };
+            retry_delay = REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL;
             let _persistence =
                 match super::persistence::read_lock(&self.auth_manager, &self.persistence).await {
                     Ok(permit) => permit,
@@ -679,10 +689,20 @@ impl RemoteControlWebsocket {
     }
 
     async fn wait_for_preference_resolution_retry(&mut self) -> bool {
+        self.wait_for_preference_resolution_retry_with_delay(
+            REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL,
+        )
+        .await
+    }
+
+    async fn wait_for_preference_resolution_retry_with_delay(
+        &mut self,
+        delay: std::time::Duration,
+    ) -> bool {
         tokio::select! {
             _ = self.shutdown_token.cancelled() => false,
             changed = self.desired_state_rx.changed() => changed.is_ok(),
-            _ = tokio::time::sleep(REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL) => true,
+            _ = tokio::time::sleep(delay) => true,
         }
     }
 

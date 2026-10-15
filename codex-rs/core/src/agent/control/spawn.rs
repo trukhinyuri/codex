@@ -1121,6 +1121,10 @@ impl LocalAgentControl {
             break;
         }
         let mut replaced_parent_developer_instructions = false;
+        let parent_model_slug = parent_thread.session.get_config().await.model.clone();
+        let cross_model_fork = config.model.is_some()
+            && parent_model_slug.is_some()
+            && config.model != parent_model_slug;
         let preserve_fork_prefix = multi_agent_version == MultiAgentVersion::V2
             && config.multi_agent_v2.preserve_fork_prefix
             && preserve_context_baselines;
@@ -1135,6 +1139,9 @@ impl LocalAgentControl {
             forked_rollout_items = items;
         }
         let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
+            if cross_model_fork && !strip_foreign_encrypted_content(envelope) {
+                return false;
+            }
             if multi_agent_version == MultiAgentVersion::V2
                 && (preserve_fork_prefix
                     || matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user" || role == "assistant"))
@@ -1534,5 +1541,38 @@ impl LocalAgentControl {
         .await;
 
         Ok((resumed_thread.thread_id, multi_agent_version))
+    }
+}
+
+fn strip_foreign_encrypted_content(envelope: &mut ResponseItemEnvelope) -> bool {
+    match &mut envelope.item {
+        ResponseItem::Reasoning {
+            summary,
+            content,
+            encrypted_content,
+            ..
+        } => {
+            *encrypted_content = None;
+            !summary.is_empty() || content.as_ref().is_some_and(|items| !items.is_empty())
+        }
+        ResponseItem::Message {
+            encrypted_content, ..
+        }
+        | ResponseItem::LocalShellCall {
+            encrypted_content, ..
+        }
+        | ResponseItem::FunctionCall {
+            encrypted_content, ..
+        }
+        | ResponseItem::ToolSearchCall {
+            encrypted_content, ..
+        }
+        | ResponseItem::CustomToolCall {
+            encrypted_content, ..
+        } => {
+            *encrypted_content = None;
+            true
+        }
+        _ => true,
     }
 }

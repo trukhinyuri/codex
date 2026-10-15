@@ -46,7 +46,11 @@ impl HookToolName {
     pub(crate) fn spawn_agent() -> Self {
         Self {
             name: "spawn_agent".to_string(),
-            matcher_aliases: vec!["Agent".to_string()],
+            matcher_aliases: vec![
+                "Agent".to_string(),
+                "collaboration__spawn_agent".to_string(),
+                "collaborationspawn_agent".to_string(),
+            ],
         }
     }
 
