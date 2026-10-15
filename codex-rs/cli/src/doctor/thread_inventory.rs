@@ -30,6 +30,7 @@ struct RolloutAuditFile {
     key: PathBuf,
     archived: bool,
     thread_id: String,
+    rollout_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -513,11 +514,14 @@ async fn scan_rollout_root(root: &Path, archived: bool, scan: &mut RolloutScan) 
                     continue;
                 }
             };
+            let rollout_id = codex_rollout::rollout_id_from_path(&logical_path)
+                .map(|rollout_id| rollout_id.to_string());
             scan.files.push(RolloutAuditFile {
                 key,
                 path,
                 archived,
                 thread_id,
+                rollout_id,
             });
         }
     }
@@ -612,14 +616,42 @@ fn archived_from_rollout_path(codex_home: &Path, path: &Path) -> Option<bool> {
     None
 }
 
+fn has_distinct_rollout_ids(files: &[&RolloutAuditFile]) -> bool {
+    let mut seen = HashSet::with_capacity(files.len());
+    files.iter().all(|file| {
+        file.rollout_id
+            .as_deref()
+            .is_some_and(|rollout_id| seen.insert(rollout_id))
+    })
+}
+
 fn missing_rollout_paths<'a>(
     files: &'a [RolloutAuditFile],
     rows_by_key: &HashMap<PathBuf, Vec<&ThreadStateAuditRow>>,
     archived: bool,
 ) -> Vec<&'a Path> {
+    let mut files_by_thread: HashMap<&str, Vec<&'a RolloutAuditFile>> = HashMap::new();
+    for file in files.iter().filter(|file| file.archived == archived) {
+        files_by_thread
+            .entry(file.thread_id.as_str())
+            .or_default()
+            .push(file);
+    }
     files
         .iter()
-        .filter(|file| file.archived == archived && !has_matching_thread_row(file, rows_by_key))
+        .filter(|file| {
+            if file.archived != archived || has_matching_thread_row(file, rows_by_key) {
+                return false;
+            }
+            let Some(thread_files) = files_by_thread.get(file.thread_id.as_str()) else {
+                return true;
+            };
+            !(thread_files.len() > 1
+                && has_distinct_rollout_ids(thread_files)
+                && thread_files
+                    .iter()
+                    .any(|candidate| has_matching_thread_row(candidate, rows_by_key)))
+        })
         .map(|file| file.path.as_path())
         .collect()
 }
@@ -635,14 +667,26 @@ fn has_matching_thread_row(
 }
 
 fn duplicate_rollout_thread_ids(files: &[RolloutAuditFile]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut duplicates = HashSet::new();
-    for thread_id in files.iter().map(|file| file.thread_id.as_str()) {
-        if !seen.insert(thread_id) {
-            duplicates.insert(thread_id.to_string());
-        }
+    let mut files_by_thread: HashMap<&str, Vec<&RolloutAuditFile>> = HashMap::new();
+    for file in files {
+        files_by_thread
+            .entry(file.thread_id.as_str())
+            .or_default()
+            .push(file);
     }
-    let mut duplicates = duplicates.into_iter().collect::<Vec<_>>();
+    let mut duplicates = files_by_thread
+        .into_iter()
+        .filter_map(|(thread_id, thread_files)| {
+            if thread_files.len() <= 1 {
+                return None;
+            }
+            let same_archive_state = thread_files
+                .iter()
+                .all(|file| file.archived == thread_files[0].archived);
+            (!same_archive_state || !has_distinct_rollout_ids(&thread_files))
+                .then(|| thread_id.to_string())
+        })
+        .collect::<Vec<_>>();
     duplicates.sort();
     duplicates
 }
@@ -791,6 +835,34 @@ mod tests {
         assert_detail(&check, "rollout DB missing archived rows", "0");
         assert_detail(&check, "rollout DB stale rows", "0");
         assert_detail(&check, "rollout DB archive mismatches", "0");
+    }
+
+    #[tokio::test]
+    async fn thread_inventory_check_accepts_reverted_rollout_revisions_for_same_thread() {
+        let fixture = Fixture::new().await;
+        let thread_id = "00000000-0000-0000-0000-000000000001";
+        let revert_rollout_id = "00000000-0000-0000-0000-000000000002";
+        let original_path =
+            fixture.write_rollout(/*archived*/ false, "2025-01-02T10-00-00", thread_id);
+        let reverted_path = original_path.with_file_name(format!(
+            "rollout-2025-01-02T10-05-00-{thread_id}_{revert_rollout_id}.jsonl"
+        ));
+        std::fs::copy(&original_path, &reverted_path).expect("copy reverted rollout");
+        fixture
+            .insert_thread_row(thread_id, reverted_path.as_path(), /*archived*/ false)
+            .await;
+
+        let check = thread_inventory_check_for_roots(
+            fixture.codex_home.path(),
+            &fixture.sqlite(),
+            "test-provider",
+        )
+        .await;
+
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert_detail(&check, "rollout DB active files", "2");
+        assert_detail(&check, "rollout DB missing active rows", "0");
+        assert_detail(&check, "rollout DB duplicate rollout thread ids", "0");
     }
 
     #[tokio::test]
