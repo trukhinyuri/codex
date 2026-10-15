@@ -822,6 +822,32 @@ pub struct ModelAvailabilityNuxConfig {
 /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
 
+/// One reusable prompt or slash command submitted through the TUI composer.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields, rename = "Preset")]
+pub struct QuickDial {
+    /// Plain-text input, limited to 8,000 UTF-8 bytes.
+    pub input: String,
+    /// Optional short name for the picker and shortcut hints.
+    pub label: Option<String>,
+}
+
+impl QuickDial {
+    /// Keep stored inputs nonempty and below the context-item limit even with byte tokenization.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.input.trim().is_empty() {
+            return Err("Preset input cannot be empty.");
+        }
+        if self.input.trim_start().starts_with('!') {
+            return Err("Presets support prompts and slash commands, not shell commands.");
+        }
+        if self.input.len() > 8_000 {
+            return Err("Preset input cannot exceed 8,000 UTF-8 bytes.");
+        }
+        Ok(())
+    }
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -977,6 +1003,10 @@ pub struct Tui {
     /// Context bindings take precedence over `global` bindings.
     #[serde(default)]
     pub keymap: TuiKeymap,
+
+    /// Saved inputs keyed by a single digit (`0` through `9`).
+    #[serde(default, rename = "presets")]
+    pub quick_dials: BTreeMap<String, QuickDial>,
 
     /// Startup tooltip availability NUX state persisted by the TUI.
     #[serde(default)]

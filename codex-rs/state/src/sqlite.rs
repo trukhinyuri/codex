@@ -1,5 +1,6 @@
 //! Shared SQLite connection configuration.
 //! Writable pools preserve existing vacuum modes and report initialization errors to callers.
+//! External lock contention while opening gets a bounded retry before the original error surfaces.
 
 #![expect(
     clippy::disallowed_methods,
@@ -25,8 +26,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+mod busy_retry;
 mod validation;
 
+pub use busy_retry::SqlitePoolWriteExt;
+pub(crate) use busy_retry::SqliteWriteQueryExt;
+pub(crate) use busy_retry::retry_on_busy;
 use validation::SqliteQuickCheckManager;
 
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -409,7 +414,7 @@ impl SqliteConfig {
                 result = pool_options.connect_with(options.clone()) => result,
             }
         };
-        let pool = connect().await?;
+        let pool = retry_on_busy(|| async { Ok(connect().await?) }).await?;
         let validation_result = self
             .quick_check_manager
             .quick_check_once(
@@ -439,7 +444,7 @@ impl SqliteConfig {
                     );
                 }
 
-                return connect().await.map_err(anyhow::Error::from);
+                return retry_on_busy(|| async { Ok(connect().await?) }).await;
             }
         }
 

@@ -19,6 +19,7 @@ fn configured_shortcut_tips_render_at_narrow_width() {
             "queue": "ctrl-x q"
         },
         "chat": {
+            "open_presets": "ctrl-x p",
             "increase_reasoning_effort": "ctrl-x +",
             "decrease_reasoning_effort": "ctrl-x minus"
         }

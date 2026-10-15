@@ -328,3 +328,6 @@ mod question_notifications_tests;
 
 #[path = "tests/security_setup_tests.rs"]
 mod security_setup_tests;
+
+#[path = "tests/quick_dials_tests.rs"]
+mod quick_dials_tests;

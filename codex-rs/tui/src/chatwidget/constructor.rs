@@ -253,6 +253,8 @@ impl ChatWidget {
             suppress_initial_user_message_submit: false,
             pending_notification: None,
             quit_shortcut_expires_at: None,
+            quick_dial_menu: false,
+            quick_dial_menu_key_guard: None,
             quit_shortcut_key: None,
             turn_runtime_metrics: RuntimeMetricsSummary::default(),
             last_rendered_width: std::cell::Cell::new(None),
