@@ -1095,3 +1095,63 @@ async fn retried_question_answers_keep_separate_envelopes_and_order() {
         assert_eq!(retried, original);
     }
 }
+
+#[tokio::test]
+async fn active_goal_turn_completion_preserves_unanswered_async_questions_and_drafts() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    chat.handle_server_notification(
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: None,
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread-1".to_string(),
+                    objective: "finish the benchmark".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: None,
+                    tokens_used: 0,
+                    time_used_seconds: 0,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    chat.add_async_questions("message", &questions());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.bottom_pane.handle_paste("in progress".into());
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+    assert_eq!(question_count(&chat), 2);
+    assert!(chat.bottom_pane.questions.as_ref().unwrap().expanded);
+    assert_eq!(chat.bottom_pane.composer_text(), "");
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: None,
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread-1".to_string(),
+                    objective: "finish the benchmark".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Complete,
+                    token_budget: None,
+                    tokens_used: 100,
+                    time_used_seconds: 5,
+                    created_at: 1,
+                    updated_at: 2,
+                },
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    handle_turn_completed(&mut chat, "turn-2", /*duration_ms*/ None);
+    assert_eq!(question_count(&chat), 0);
+    assert_eq!(
+        chat.bottom_pane.composer_text(),
+        "> Which way?\n\nin progress"
+    );
+}
