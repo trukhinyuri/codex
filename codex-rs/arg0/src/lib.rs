@@ -37,16 +37,24 @@ pub struct Arg0DispatchPaths {
 
 /// Keeps the per-session PATH entry alive and locked for the process lifetime.
 pub struct Arg0PathEntryGuard {
-    _temp_dir: TempDir,
-    _lock_file: File,
+    _temp_dir: Option<TempDir>,
+    _lock_file: Option<File>,
     paths: Arg0DispatchPaths,
 }
 
 impl Arg0PathEntryGuard {
     fn new(temp_dir: TempDir, lock_file: File, paths: Arg0DispatchPaths) -> Self {
         Self {
-            _temp_dir: temp_dir,
-            _lock_file: lock_file,
+            _temp_dir: Some(temp_dir),
+            _lock_file: Some(lock_file),
+            paths,
+        }
+    }
+
+    fn reused(paths: Arg0DispatchPaths) -> Self {
+        Self {
+            _temp_dir: None,
+            _lock_file: None,
             paths,
         }
     }
@@ -332,30 +340,67 @@ fn prepare_aliases_in_home(
     codex_home: &Path,
     existing_path: Option<OsString>,
 ) -> std::io::Result<(Arg0PathEntryGuard, OsString)> {
-    std::fs::create_dir_all(codex_home)?;
     // Windows and WSL can share CODEX_HOME without sharing a lock namespace.
     // Keep each OS outside the legacy `tmp/arg0` root so older clients cannot
     // delete these helpers while their owning process is still running.
     let temp_root = codex_home
         .join("tmp")
         .join(format!("arg0-{}", std::env::consts::OS));
-    std::fs::create_dir_all(&temp_root)?;
+    match create_aliases_in_temp_root(&temp_root, existing_path.clone(), Some(codex_home)) {
+        Ok(result) => Ok(result),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            if let Some(reused) =
+                reuse_existing_path_entry_for_codex_aliases(codex_home, existing_path.as_deref())?
+            {
+                return Ok(reused);
+            }
+            let fallback_root =
+                std::env::temp_dir().join(format!("codex-arg0-{}", std::env::consts::OS));
+            create_aliases_in_temp_root(&fallback_root, existing_path, None).or(Err(err))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn create_aliases_in_temp_root(
+    temp_root: &Path,
+    existing_path: Option<OsString>,
+    ensure_home: Option<&Path>,
+) -> std::io::Result<(Arg0PathEntryGuard, OsString)> {
+    if ensure_home
+        .and_then(|home| std::fs::metadata(home).ok())
+        .is_some_and(|meta| meta.permissions().readonly())
+        || std::fs::metadata(temp_root)
+            .ok()
+            .is_some_and(|meta| meta.permissions().readonly())
+    {
+        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    }
+    if let Some(codex_home) = ensure_home {
+        std::fs::create_dir_all(codex_home)?;
+    }
+    std::fs::create_dir_all(temp_root)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
         // Ensure only the current user can access the temp directory.
-        std::fs::set_permissions(&temp_root, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(temp_root, std::fs::Permissions::from_mode(0o700))?;
     }
 
     // Best-effort cleanup of stale per-session dirs. Ignore failures so startup proceeds.
-    if let Err(err) = janitor_cleanup(&temp_root) {
+    if let Err(err) = janitor_cleanup(temp_root) {
         eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
     }
 
     let temp_dir = tempfile::Builder::new()
         .prefix("codex-arg0")
-        .tempdir_in(&temp_root)?;
+        .tempdir_in(temp_root)?;
     let path = temp_dir.path();
 
     let lock_path = path.join(LOCK_FILENAME);
@@ -397,26 +442,103 @@ fn prepare_aliases_in_home(
     }
 
     let updated_path_env_var = path_env_with_entry(path, existing_path);
+    let paths = build_dispatch_paths(path, std::env::current_exe().ok());
 
-    let paths = Arg0DispatchPaths {
+    Ok((
+        Arg0PathEntryGuard::new(temp_dir, lock_file, paths),
+        updated_path_env_var,
+    ))
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+fn build_dispatch_paths(alias_dir: &Path, current_exe: Option<PathBuf>) -> Arg0DispatchPaths {
+    Arg0DispatchPaths {
         main_execve_wrapper_exe: None,
-        codex_self_exe: std::env::current_exe().ok(),
+        codex_self_exe: current_exe,
         codex_linux_sandbox_exe: {
             #[cfg(target_os = "linux")]
             {
-                Some(path.join(CODEX_LINUX_SANDBOX_ARG0))
+                Some(alias_dir.join(CODEX_LINUX_SANDBOX_ARG0))
             }
             #[cfg(not(target_os = "linux"))]
             {
                 None
             }
         },
-    };
+    }
+}
 
-    Ok((
-        Arg0PathEntryGuard::new(temp_dir, lock_file, paths),
-        updated_path_env_var,
-    ))
+fn reuse_existing_path_entry_for_codex_aliases(
+    codex_home: &Path,
+    existing_path: Option<&std::ffi::OsStr>,
+) -> std::io::Result<Option<(Arg0PathEntryGuard, OsString)>> {
+    let Some(existing_path) = existing_path else {
+        return Ok(None);
+    };
+    let current_exe = std::env::current_exe()?;
+    let os_root = codex_home
+        .join("tmp")
+        .join(format!("arg0-{}", std::env::consts::OS));
+    let legacy_root = codex_home.join("tmp").join("arg0");
+    let canonical_os_root = os_root.canonicalize().ok();
+    let canonical_legacy_root = legacy_root.canonicalize().ok();
+
+    for entry in std::env::split_paths(existing_path) {
+        let under_arg0_root = entry.starts_with(&os_root)
+            || entry.starts_with(&legacy_root)
+            || entry.canonicalize().ok().is_some_and(|canon| {
+                canonical_os_root
+                    .as_ref()
+                    .is_some_and(|root| canon.starts_with(root))
+                    || canonical_legacy_root
+                        .as_ref()
+                        .is_some_and(|root| canon.starts_with(root))
+            });
+        if !under_arg0_root {
+            continue;
+        }
+        if has_reusable_codex_aliases(&entry, &current_exe) {
+            let paths = build_dispatch_paths(&entry, Some(current_exe));
+            return Ok(Some((
+                Arg0PathEntryGuard::reused(paths),
+                existing_path.to_os_string(),
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+fn has_reusable_codex_aliases(alias_dir: &Path, current_exe: &Path) -> bool {
+    let canonical_exe = current_exe.canonicalize().ok();
+    for filename in &[
+        APPLY_PATCH_ARG0,
+        MISSPELLED_APPLY_PATCH_ARG0,
+        #[cfg(target_os = "linux")]
+        CODEX_LINUX_SANDBOX_ARG0,
+    ] {
+        #[cfg(unix)]
+        {
+            let link = alias_dir.join(filename);
+            let matches = match (link.canonicalize().ok(), canonical_exe.as_ref()) {
+                (Some(link_target), Some(exe_target)) => &link_target == exe_target,
+                _ => std::fs::read_link(&link)
+                    .ok()
+                    .is_some_and(|target| target == current_exe),
+            };
+            if !matches {
+                return false;
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if !alias_dir.join(format!("{filename}.bat")).is_file() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[cfg(windows)]
@@ -767,11 +889,16 @@ mod tests {
         // Older versions clean only this root. Run that cleanup while a new
         // helper is live, then confirm the advertised helper remains usable.
         janitor_cleanup(&legacy_root)?;
-        let helper = guard._temp_dir.path().join(if cfg!(windows) {
-            "apply_patch.bat"
-        } else {
-            "apply_patch"
-        });
+        let helper = guard
+            ._temp_dir
+            .as_ref()
+            .expect("temp dir")
+            .path()
+            .join(if cfg!(windows) {
+                "apply_patch.bat"
+            } else {
+                "apply_patch"
+            });
         assert!(helper.is_file());
         assert_eq!(
             fs::read(foreign_root.join("codex-arg0-existing/helper"))?,
@@ -816,6 +943,62 @@ mod tests {
         janitor_cleanup(root.path())?;
 
         assert!(!dir.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reuses_existing_path_entry_when_codex_home_is_read_only() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir()?;
+        let (parent_guard, inherited_path) =
+            super::prepare_aliases_in_home(home.path(), std::env::var_os("PATH"))?;
+        let temp_root = home
+            .path()
+            .join("tmp")
+            .join(format!("arg0-{}", std::env::consts::OS));
+
+        struct RestorePermissions<'a>(&'a Path, &'a Path);
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o700));
+                let _ = fs::set_permissions(self.1, fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = RestorePermissions(&temp_root, home.path());
+        fs::set_permissions(&temp_root, fs::Permissions::from_mode(0o555))?;
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o555))?;
+
+        let (child_guard, child_path) =
+            super::prepare_aliases_in_home(home.path(), Some(inherited_path.clone()))?;
+
+        assert_eq!(child_path, inherited_path);
+        assert_eq!(child_guard.paths(), parent_guard.paths());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn falls_back_to_system_temp_when_codex_home_is_read_only_without_matching_aliases()
+    -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir()?;
+        struct RestorePermissions<'a>(&'a Path);
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = RestorePermissions(home.path());
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o555))?;
+
+        let (_guard, updated_path) = super::prepare_aliases_in_home(home.path(), None)?;
+        let first_entry = std::env::split_paths(&updated_path)
+            .next()
+            .expect("fallback PATH entry");
+        assert!(first_entry.join(super::APPLY_PATCH_ARG0).exists());
         Ok(())
     }
 }
