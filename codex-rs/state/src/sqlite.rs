@@ -460,10 +460,33 @@ impl SqliteConfig {
         if let Some(busy_timeout) = busy_timeout {
             options = options.busy_timeout(busy_timeout);
         }
-        SqlitePoolOptions::new()
+        let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(options)
-            .await
+            .connect_with(options.clone())
+            .await?;
+        let mut shm_os = path.as_os_str().to_os_string();
+        shm_os.push("-shm");
+        let mut wal_os = path.as_os_str().to_os_string();
+        wal_os.push("-wal");
+        if !Path::new(&shm_os).exists()
+            && !Path::new(&wal_os).exists()
+            && let Err(sqlx::Error::Database(error)) =
+                sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+                    .fetch_one(&pool)
+                    .await
+            && error.code().is_some_and(|code| {
+                code.parse::<i32>()
+                    .ok()
+                    .is_some_and(|code| (code & 0xff) == libsqlite3_sys::SQLITE_CANTOPEN)
+            })
+        {
+            pool.close().await;
+            return SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options.immutable(true))
+                .await;
+        }
+        Ok(pool)
     }
 }
 

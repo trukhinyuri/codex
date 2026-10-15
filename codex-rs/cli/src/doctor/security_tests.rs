@@ -182,3 +182,38 @@ fn detected_products_preserve_partial_inspection_visibility() {
     );
     assert_eq!(check.issues.len(), 1);
 }
+
+#[test]
+fn macos_system_extensions_xml_fallback_detects_only_activated_matching_products() {
+    let xml = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<plist version=\"1.0\">\n<dict>\n\t<key>extensions</key>\n\t<array>\n",
+        "\t\t<dict>\n",
+        "\t\t\t<key>identifier</key>\n\t\t\t<string>com.crowdstrike.falcon.Agent</string>\n",
+        "\t\t\t<key>state</key>\n\t\t\t<string>activated_enabled</string>\n",
+        "\t\t\t<key>teamID</key>\n\t\t\t<string>X9E956P446</string>\n",
+        "\t\t</dict>\n",
+        "\t\t<dict>\n",
+        "\t\t\t<key>identifier</key>\n\t\t\t<string>com.microsoft.wdav.epsext</string>\n",
+        "\t\t\t<key>state</key>\n\t\t\t<string>uninstalling</string>\n",
+        "\t\t\t<key>teamID</key>\n\t\t\t<string>UBF8T346G9</string>\n",
+        "\t\t</dict>\n",
+        "\t</array>\n</dict>\n</plist>\n"
+    );
+    let products = &[
+        (
+            "CrowdStrike Falcon",
+            "X9E956P446",
+            "com.crowdstrike.falcon.Agent",
+        ),
+        (
+            "Microsoft Defender",
+            "UBF8T346G9",
+            "com.microsoft.wdav.epsext",
+        ),
+    ];
+    assert_eq!(
+        super::parse_macos_system_extensions_xml(xml, products),
+        Some(vec!["CrowdStrike Falcon"])
+    );
+}
