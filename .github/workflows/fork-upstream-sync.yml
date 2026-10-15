@@ -1,0 +1,221 @@
+# Hourly sync of this fork with openai/codex: main is fast-forwarded to upstream main,
+# and upstream main is merged into frontier-main. Pushes need the UPSTREAM_SYNC_DEPLOY_KEY
+# secret (a write deploy key) because GITHUB_TOKEN cannot push .github/workflows changes.
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  push:
+    branches:
+      - frontier-main
+    paths:
+      - .github/workflows/fork-upstream-sync.yml
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show the planned changes without pushing or disabling workflows
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'trukhinyuri/codex'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Sync main and frontier-main with openai/codex
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_KEY: ${{ secrets.UPSTREAM_SYNC_DEPLOY_KEY }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+          UPSTREAM_REPO: openai/codex
+          UPSTREAM_BRANCH: main
+          MIRROR_BRANCH: main
+          INTEGRATION_BRANCH: frontier-main
+          SELF_WORKFLOW: .github/workflows/fork-upstream-sync.yml
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+
+          repo=$GITHUB_REPOSITORY
+          summary=${GITHUB_STEP_SUMMARY:-/dev/null}
+          upstream_ref="${UPSTREAM_REPO/\//:}:$UPSTREAM_BRANCH"
+          status=0
+
+          mutate() {
+            if [ "$DRY_RUN" = true ]; then
+              echo "[dry run] $*"
+            else
+              "$@"
+            fi
+          }
+
+          registered_workflows() {
+            gh api --paginate "repos/$repo/actions/workflows?per_page=100" --jq '.workflows[].path' | sort -u
+          }
+
+          workflow_files() {
+            git ls-tree --name-only "$1" .github/workflows/ | { grep -E '\.ya?ml$' || true; } | sort -u
+          }
+
+          wait_for_registration() {
+            local missing=$1
+            for _ in 1 2 3 4 5 6; do
+              missing=$(comm -23 <(printf '%s\n' "$missing") <(registered_workflows))
+              if [ -z "$missing" ]; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::warning::GitHub has not registered these new upstream workflows yet: $(tr '\n' ' ' <<<"$missing")"
+          }
+
+          disable_inherited_workflows() {
+            gh api --paginate "repos/$repo/actions/workflows?per_page=100" \
+              --jq '.workflows[] | select(.state == "active") | "\(.id) \(.path)"' |
+              while read -r id path; do
+                if [ "$path" != "$SELF_WORKFLOW" ]; then
+                  echo "Disabling inherited workflow $path"
+                  mutate gh api --silent -X PUT "repos/$repo/actions/workflows/$id/disable" </dev/null
+                fi
+              done
+          }
+
+          disable_inherited_workflows
+
+          mirror_status=$(gh api "repos/$repo/compare/$upstream_ref...$MIRROR_BRANCH" --jq .status || echo unknown)
+          integration_behind=$(gh api "repos/$repo/compare/$upstream_ref...$INTEGRATION_BRANCH" --jq .behind_by || echo unknown)
+          if [ "$mirror_status" = identical ] && [ "$integration_behind" = 0 ]; then
+            echo "Already in sync with $UPSTREAM_REPO $UPSTREAM_BRANCH."
+            echo "Already in sync with \`$UPSTREAM_REPO\` \`$UPSTREAM_BRANCH\`." >> "$summary"
+            exit 0
+          fi
+
+          git clone --quiet --bare --no-tags --filter=blob:none "https://github.com/$repo.git" "$RUNNER_TEMP/fork.git"
+          cd "$RUNNER_TEMP/fork.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --quiet --no-tags "https://github.com/$UPSTREAM_REPO.git" \
+            "+refs/heads/$UPSTREAM_BRANCH:refs/upstream/$UPSTREAM_BRANCH"
+
+          upstream=$(git rev-parse "refs/upstream/$UPSTREAM_BRANCH")
+          mirror=$(git rev-parse "refs/heads/$MIRROR_BRANCH")
+          integration=$(git rev-parse "refs/heads/$INTEGRATION_BRANCH")
+
+          if [ "$mirror" = "$upstream" ]; then
+            mirror_result="up to date"
+          elif git merge-base --is-ancestor "$mirror" "$upstream"; then
+            mirror_result=fast-forward
+          else
+            mirror_result=diverged
+          fi
+
+          new_integration=$integration
+          conflicts=""
+          if git merge-base --is-ancestor "$upstream" "$integration"; then
+            integration_result="up to date"
+          elif git merge-base --is-ancestor "$integration" "$upstream"; then
+            integration_result=fast-forward
+            new_integration=$upstream
+          else
+            merge_status=0
+            merge_output=$(git merge-tree --write-tree --name-only --no-messages "$integration" "$upstream") || merge_status=$?
+            case $merge_status in
+              0)
+                new_integration=$(git commit-tree "$(head -n 1 <<<"$merge_output")" -p "$integration" -p "$upstream" \
+                  -m "Merge branch '$UPSTREAM_BRANCH' of https://github.com/$UPSTREAM_REPO into $INTEGRATION_BRANCH")
+                integration_result=merged
+                ;;
+              1)
+                integration_result=conflict
+                conflicts=$(tail -n +2 <<<"$merge_output" | sed '/^$/d')
+                ;;
+              *)
+                echo "::error::git merge-tree failed with status $merge_status"
+                exit "$merge_status"
+                ;;
+            esac
+          fi
+
+          if [ "$DRY_RUN" != true ] && { [ "$new_integration" != "$integration" ] || [ "$mirror_result" = fast-forward ]; }; then
+            if [ -z "${DEPLOY_KEY:-}" ]; then
+              echo "::error::Add a write deploy key and store its private key in the UPSTREAM_SYNC_DEPLOY_KEY secret."
+              exit 1
+            fi
+            (umask 077 && printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/deploy_key")
+            trap 'rm -f "$RUNNER_TEMP/deploy_key"' EXIT
+            gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+            export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+            git remote set-url --push origin "git@github.com:$repo.git"
+          fi
+
+          if [ "$new_integration" != "$integration" ]; then
+            mutate git push --quiet origin "$new_integration:refs/heads/$INTEGRATION_BRANCH"
+            added=$(comm -13 <(workflow_files "$integration") <(workflow_files "$upstream"))
+            if [ -n "$added" ] && [ "$DRY_RUN" != true ]; then
+              wait_for_registration "$added"
+            fi
+            disable_inherited_workflows
+          fi
+
+          mirror_after=$mirror
+          if [ "$mirror_result" = fast-forward ]; then
+            if [ "$DRY_RUN" = true ]; then
+              settled='.workflows[].path'
+            else
+              settled='.workflows[] | select(.state != "active") | .path'
+            fi
+            blockers=$(comm -23 \
+              <(git ls-tree --name-only "$upstream" .github/workflows/ | grep -E '\.ya?ml$' | sort -u) \
+              <(gh api --paginate "repos/$repo/actions/workflows?per_page=100" --jq "$settled" | sort -u))
+            if [ -z "$blockers" ]; then
+              mutate git push --quiet origin "$upstream:refs/heads/$MIRROR_BRANCH"
+              mirror_after=$upstream
+            else
+              mirror_result=deferred
+              echo "::warning::$MIRROR_BRANCH waits until these upstream workflows are registered and disabled: $(tr '\n' ' ' <<<"$blockers")"
+            fi
+          fi
+
+          {
+            echo "### Sync with \`$UPSTREAM_REPO\` \`$UPSTREAM_BRANCH\` at \`${upstream:0:12}\`"
+            echo
+            echo "| Branch | Before | After | Result |"
+            echo "| --- | --- | --- | --- |"
+            echo "| \`$MIRROR_BRANCH\` | \`${mirror:0:12}\` | \`${mirror_after:0:12}\` | $mirror_result |"
+            echo "| \`$INTEGRATION_BRANCH\` | \`${integration:0:12}\` | \`${new_integration:0:12}\` | $integration_result |"
+            if [ "$mirror_result" = diverged ]; then
+              echo
+              echo "\`$MIRROR_BRANCH\` has commits that are not in \`$UPSTREAM_REPO\` \`$UPSTREAM_BRANCH\`, so it was left unchanged."
+            fi
+            if [ -n "$conflicts" ]; then
+              echo
+              echo "Conflicting files:"
+              while IFS= read -r path; do
+                echo "- \`$path\`"
+              done <<<"$conflicts"
+              echo
+              echo "Resolve locally with \`git switch $INTEGRATION_BRANCH && git pull && git pull https://github.com/$UPSTREAM_REPO $UPSTREAM_BRANCH\`, then commit and push."
+            fi
+          } >> "$summary"
+
+          if [ "$mirror_result" = diverged ]; then
+            echo "::error::$MIRROR_BRANCH has commits that are not in $UPSTREAM_REPO $UPSTREAM_BRANCH; it was left unchanged."
+            status=1
+          fi
+          if [ "$integration_result" = conflict ]; then
+            echo "::error::$UPSTREAM_REPO $UPSTREAM_BRANCH conflicts with $INTEGRATION_BRANCH in: $(tr '\n' ' ' <<<"$conflicts")"
+            status=1
+          fi
+          exit "$status"
