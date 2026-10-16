@@ -239,23 +239,24 @@ impl McpServerView {
         }
     }
 
-    async fn listed_tools(
+    async fn listed_catalog(
         &self,
         server_name: &str,
         tool_plugin_context: &ToolPluginContext,
-    ) -> Result<Vec<ToolInfo>, StartupOutcomeError> {
-        let tools = if let Some(client) = self.connection.client.ready_client() {
+    ) -> Result<(Vec<ToolInfo>, Option<Arc<serde_json::Value>>), StartupOutcomeError> {
+        let (tools, meta) = if let Some(client) = self.connection.client.ready_client() {
             self.refresh_notified_catalog(server_name, &client).await;
-            client.listed_tools().await
+            client.listed_catalog().await
         } else {
-            self.connection.client.listed_tools().await?
+            self.connection.client.listed_catalog().await?
         };
         let tools = filter_tools(tools, &self.tool_filter);
-        Ok(if self.connection.client.is_codex_apps_mcp_server {
+        let tools = if self.connection.client.is_codex_apps_mcp_server {
             prepare_codex_apps_tools_for_model(tools, tool_plugin_context)
         } else {
             prepare_regular_mcp_tools_for_model(tools, tool_plugin_context)
-        })
+        };
+        Ok((tools, meta))
     }
 }
 
@@ -448,6 +449,10 @@ impl McpConnectionSet {
                     &configured_config.auth,
                     protocol_mode.preferred_protocol_version().as_str(),
                     catalog_item_limit,
+                    &client_elicitation_capability,
+                    client_mcp_extensions
+                        .iter()
+                        .collect::<std::collections::BTreeMap<_, _>>(),
                 ]);
                 scope.sort_all_objects();
                 codex_apps_tools_cache
@@ -1097,9 +1102,13 @@ impl McpConnectionSet {
     }
 
     /// Capabilities belong to the initialized connection, never a shared tool cache.
-    pub(crate) fn list_available_server_capabilities(&self) -> HashMap<String, serde_json::Value> {
+    pub(crate) fn list_available_server_capabilities(
+        &self,
+        include_server: impl Fn(&str) -> bool,
+    ) -> HashMap<String, serde_json::Value> {
         self.servers
             .iter()
+            .filter(|(name, _)| include_server(name))
             .filter_map(|(name, view)| {
                 view.connection
                     .client

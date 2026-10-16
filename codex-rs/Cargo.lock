@@ -4140,6 +4140,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-multi-env-copy-file"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-config",
+ "codex-core",
+ "codex-exec-server",
+ "codex-extension-api",
+ "codex-features",
+ "codex-models-manager",
+ "codex-protocol",
+ "codex-tools",
+ "codex-utils-absolute-path",
+ "codex-utils-path-uri",
+ "core_test_support",
+ "futures",
+ "insta",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-case",
+ "tokio",
+]
+
+[[package]]
 name = "codex-mxc-sandbox"
 version = "0.0.0"
 dependencies = [
@@ -5372,6 +5398,7 @@ dependencies = [
  "codex-windows-sandbox",
  "pretty_assertions",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
  "windows 0.58.0",
@@ -9334,6 +9361,8 @@ checksum = "e82db8c87c7f1ccecb34ce0c24399b8a73081427f3c7c50a5d597925356115e4"
 dependencies = [
  "console",
  "once_cell",
+ "regex",
+ "serde",
  "similar",
  "tempfile",
 ]

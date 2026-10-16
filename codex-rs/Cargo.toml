@@ -63,6 +63,7 @@ members = [
     "ext/agent-message-board",
     "ext/connectors",
     "ext/extension-api",
+    "ext/multi-env-copy-file",
     "ext/goal",
     "ext/git-attribution",
     "ext/guardian-reviewer",

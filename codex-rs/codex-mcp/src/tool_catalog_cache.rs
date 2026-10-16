@@ -70,6 +70,7 @@ struct OptionalStartupDeadline {
 
 struct ToolCatalogSnapshot {
     tools: Vec<ToolInfo>,
+    meta: Option<Arc<serde_json::Value>>,
     published_at: Instant,
     tool_list_revision: Option<ToolListRevision>,
 }
@@ -192,6 +193,14 @@ impl McpToolCatalogCacheContext {
         &self,
         fallback: Option<Vec<ToolInfo>>,
     ) -> Option<Vec<ToolInfo>> {
+        self.current_catalog_or(fallback.map(|tools| (tools, None)))
+            .map(|(tools, _)| tools)
+    }
+
+    pub(crate) fn current_catalog_or(
+        &self,
+        fallback: Option<(Vec<ToolInfo>, Option<Arc<serde_json::Value>>)>,
+    ) -> Option<(Vec<ToolInfo>, Option<Arc<serde_json::Value>>)> {
         let state = lock_unpoisoned(&self.entry.state);
         if state.disabled_by_server
             || state
@@ -205,7 +214,7 @@ impl McpToolCatalogCacheContext {
             .snapshot
             .as_ref()
             .filter(|snapshot| snapshot.published_at.elapsed() <= TOOL_CATALOG_CACHE_TTL)
-            .map(|snapshot| snapshot.tools.clone())
+            .map(|snapshot| (snapshot.tools.clone(), snapshot.meta.clone()))
             .or(fallback)
     }
 
@@ -226,7 +235,12 @@ impl McpToolCatalogCacheContext {
         state.snapshot = None;
     }
 
-    pub(crate) fn publish_if_newest(&self, ticket: McpToolCatalogFetchTicket, tools: &[ToolInfo]) {
+    pub(crate) fn publish_if_newest(
+        &self,
+        ticket: McpToolCatalogFetchTicket,
+        tools: &[ToolInfo],
+        meta: Option<Arc<serde_json::Value>>,
+    ) {
         let mut state = lock_unpoisoned(&self.entry.state);
         if state.disabled_by_server || ticket.generation <= state.last_accepted_generation {
             return;
@@ -242,6 +256,7 @@ impl McpToolCatalogCacheContext {
         state.optional_startup_deadline = None;
         state.snapshot = Some(ToolCatalogSnapshot {
             tools,
+            meta,
             published_at: Instant::now(),
             tool_list_revision: ticket.tool_list_revision,
         });

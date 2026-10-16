@@ -495,6 +495,7 @@ pub async fn read_mcp_resource(
 pub struct McpServerStatusSnapshot {
     pub server_infos: HashMap<String, McpServerInfo>,
     pub server_capabilities: HashMap<String, serde_json::Value>,
+    pub tool_list_meta: HashMap<String, Arc<serde_json::Value>>,
     pub tools_by_server: HashMap<String, HashMap<String, Tool>>,
     pub tools_errors: HashMap<String, String>,
     pub resources: HashMap<String, Vec<Resource>>,
@@ -518,6 +519,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         return McpServerStatusSnapshot {
             server_infos: HashMap::new(),
             server_capabilities: HashMap::new(),
+            tool_list_meta: HashMap::new(),
             tools_by_server: HashMap::new(),
             tools_errors: HashMap::new(),
             resources: HashMap::new(),
@@ -806,13 +808,13 @@ pub(crate) async fn collect_mcp_server_status_snapshot_from_manager(
 ) -> McpServerStatusSnapshot {
     let selected_servers: HashSet<&str> = server_names.iter().map(String::as_str).collect();
     let include_server = |name: &str| selected_servers.contains(name);
-    let ((server_infos, (tools, tools_errors)), resources, resource_templates) = tokio::join!(
+    let ((server_infos, (tools, tools_errors, tool_list_meta)), resources, resource_templates) = tokio::join!(
         async {
             let server_infos = mcp_connection_manager
                 .list_available_server_infos(include_server)
                 .await;
             let tools = mcp_connection_manager
-                .list_tools_with_errors(include_server)
+                .list_catalogs_with_errors(include_server)
                 .await;
             (server_infos, tools)
         },
@@ -836,6 +838,8 @@ pub(crate) async fn collect_mcp_server_status_snapshot_from_manager(
         },
     );
 
+    let server_capabilities =
+        mcp_connection_manager.list_available_server_capabilities(include_server);
     let mut tools_by_server = HashMap::<String, HashMap<String, Tool>>::new();
     for tool_info in tools {
         let raw_tool_name = tool_info.tool.name.to_string();
@@ -859,7 +863,8 @@ pub(crate) async fn collect_mcp_server_status_snapshot_from_manager(
     }
 
     McpServerStatusSnapshot {
-        server_capabilities: mcp_connection_manager.list_available_server_capabilities(),
+        server_capabilities,
+        tool_list_meta,
         server_infos,
         tools_by_server,
         tools_errors,
