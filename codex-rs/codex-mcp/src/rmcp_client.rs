@@ -1046,10 +1046,15 @@ async fn start_server_task(
             (None, None) => tools.into(),
             _ => unreachable!("Codex Apps fetch ticket requires cache context"),
         };
-    if let (Some(cache_context), Some(fetch_ticket)) = (
+    if let (Some(cache_context), Some(mut fetch_ticket)) = (
         tool_catalog_cache_context.as_ref(),
         tool_catalog_fetch_ticket,
     ) {
+        if cache_context.track_tool_list_changes {
+            // A notification makes this session's startup catalog ineligible for reuse.
+            // Discovery can be session-specific, so do not cache later live catalogs.
+            fetch_ticket.tool_list_revision = Some(client.tool_list_revision());
+        }
         cache_context.publish_if_newest(fetch_ticket, &client_tools);
     }
     if is_codex_apps_mcp_server || tool_catalog_cache_context.is_some() {

@@ -185,6 +185,8 @@ struct McpServerView {
     tool_filter: ToolFilter,
     tool_timeout: Option<Duration>,
     catalog_item_limit: usize,
+    refresh_tool_list: bool,
+    refresh_timeout: Duration,
 }
 
 impl McpServerView {
@@ -210,11 +212,44 @@ impl McpServerView {
             }
     }
 
+    async fn refresh_notified_catalog(&self, server_name: &str, client: &ManagedClient) {
+        if !self.refresh_tool_list || self.connection.client.is_codex_apps_mcp_server {
+            return;
+        }
+        let timeout = self.refresh_timeout;
+        let result = client
+            .tool_catalog
+            .refresh_after_notifications(&client.client.tool_list_revision(), timeout, || {
+                crate::rmcp_client::list_tools_for_client_uncached(
+                    server_name,
+                    /*is_codex_apps_mcp_server*/ false,
+                    "list_changed",
+                    &client.client,
+                    Some(timeout),
+                    self.catalog_item_limit,
+                    client.server_instructions.as_deref(),
+                )
+            })
+            .await;
+        if result.is_err() {
+            tracing::warn!(
+                server_name,
+                "MCP tool catalog refresh failed; retaining the previous catalog"
+            );
+        }
+    }
+
     async fn listed_tools(
         &self,
+        server_name: &str,
         tool_plugin_context: &ToolPluginContext,
     ) -> Result<Vec<ToolInfo>, StartupOutcomeError> {
-        let tools = self.connection.client.listed_tools().await?;
+        let tools = if let Some(client) = self.connection.client.ready_client() {
+            self.refresh_notified_catalog(server_name, &client).await;
+            client.listed_tools().await
+        } else {
+            self.connection.client.listed_tools().await?
+        };
         let tools = filter_tools(tools, &self.tool_filter);
         Ok(if self.connection.client.is_codex_apps_mcp_server {
             prepare_codex_apps_tools_for_model(tools, tool_plugin_context)
@@ -494,6 +529,7 @@ impl McpConnectionSet {
             };
             if let Some(previous_view) =
                 reusable_previous.and_then(|previous| previous.servers.get(&server_name))
+                && previous_view.refresh_tool_list == config.mcp_tool_list_changed
             {
                 let connection = Arc::clone(&previous_view.connection);
                 let reusable_pending_startup = connection.identity.as_ref()
@@ -539,6 +575,8 @@ impl McpConnectionSet {
                             connection,
                             protocol_mode,
                             startup_readiness: configured_config.startup_readiness,
+                            refresh_tool_list: config.mcp_tool_list_changed,
+                            refresh_timeout: startup_timeout,
                             metadata,
                             tool_filter: configured_tool_filter,
                             tool_timeout: configured_tool_timeout,
@@ -597,7 +635,7 @@ impl McpConnectionSet {
                 }
             }
             let cancel_token = startup_cancellation_token.child_token();
-            let tool_catalog_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME
+            let mut tool_catalog_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME
                 || server.requires_read_only_mcp_tools()
             {
                 None
@@ -617,6 +655,9 @@ impl McpConnectionSet {
             } else {
                 None
             };
+            if let Some(context) = &mut tool_catalog_cache_context {
+                context.track_tool_list_changes = config.mcp_tool_list_changed;
+            }
             let has_runtime_auth = runtime_auth_provider.is_some();
             let async_managed_client = AsyncManagedClient::new(
                 server_name.clone(),
@@ -677,6 +718,8 @@ impl McpConnectionSet {
                     }),
                     protocol_mode,
                     startup_readiness: configured_config.startup_readiness,
+                    refresh_tool_list: config.mcp_tool_list_changed,
+                    refresh_timeout: startup_timeout,
                     metadata,
                     tool_filter: configured_tool_filter,
                     tool_timeout: configured_tool_timeout,

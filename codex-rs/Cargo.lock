@@ -3712,6 +3712,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",
@@ -12946,7 +12947,7 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "3.5.1"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk?rev=4048ac40e958fb1a7d614617a2ae8d26666ee2fa#4048ac40e958fb1a7d614617a2ae8d26666ee2fa"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk?rev=98a54789b80110ad210495c4ad845c89e1980471#98a54789b80110ad210495c4ad845c89e1980471"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -12957,6 +12958,7 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "indexmap 2.14.0",
+ "libc",
  "oauth2",
  "pastey",
  "pin-project-lite",
@@ -12981,7 +12983,7 @@ dependencies = [
 [[package]]
 name = "rmcp-macros"
 version = "3.5.1"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk?rev=4048ac40e958fb1a7d614617a2ae8d26666ee2fa#4048ac40e958fb1a7d614617a2ae8d26666ee2fa"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk?rev=98a54789b80110ad210495c4ad845c89e1980471#98a54789b80110ad210495c4ad845c89e1980471"
 dependencies = [
  "darling 0.24.0",
  "proc-macro2",

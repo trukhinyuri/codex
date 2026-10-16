@@ -249,6 +249,8 @@ pub enum Feature {
     EnableMcpApps,
     /// Enable MCP protocol version 2026-07-28 support.
     Mcp20260728,
+    /// Honor ordinary MCP server tool-list notifications within a turn.
+    McpToolListChanged,
     /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
     CodexAppsMcp20260728,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
@@ -1543,6 +1545,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Mcp20260728,
         key: "mcp_2026_07_28",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::McpToolListChanged,
+        key: "mcp_tool_list_changed",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

@@ -171,7 +171,13 @@ impl McpConnectionSet {
                 }
                 return None;
             };
-            if client.client.is_closed().await {
+            if client.client.is_closed().await
+                || (view.refresh_tool_list
+                    && !view.connection.client.is_codex_apps_mcp_server
+                    && !client
+                        .tool_catalog
+                        .notifications_current(&client.client.tool_list_revision()))
+            {
                 return None;
             }
             let revision = client.tool_catalog.read(|catalog| catalog.revision).await;
@@ -213,7 +219,7 @@ impl McpConnectionSet {
                         .startup_complete
                         .load(Ordering::Acquire);
                     let server_tools = view
-                        .listed_tools(&self.tool_plugin_context)
+                        .listed_tools(server_name, &self.tool_plugin_context)
                         .instrument(trace_span!(
                             "list_tools_for_server",
                             server_name = %server_name,
@@ -392,6 +398,7 @@ impl McpConnectionSet {
                     trace!(server_name = %server_name, "omitting MCP server without an exact ready client");
                     return None;
                 };
+                view.refresh_notified_catalog(server_name, &client).await;
                 client.tool_timeout = view.tool_timeout;
                 let snapshot = client.tool_catalog.read(Arc::new).await;
                 let server_tools = snapshot.tools.to_vec();

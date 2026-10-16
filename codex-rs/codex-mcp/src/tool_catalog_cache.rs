@@ -17,6 +17,7 @@ use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_exec_server::Environment;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_rmcp_client::ToolListRevision;
 use lru::LruCache;
 use rmcp::model::ElicitationCapability;
 use sha1::Digest;
@@ -70,14 +71,17 @@ struct OptionalStartupDeadline {
 struct ToolCatalogSnapshot {
     tools: Vec<ToolInfo>,
     published_at: Instant,
+    tool_list_revision: Option<ToolListRevision>,
 }
 
 #[derive(Clone)]
 pub(crate) struct McpToolCatalogCacheContext {
+    pub(crate) track_tool_list_changes: bool,
     entry: Arc<ToolCatalogCacheEntry>,
 }
 
 pub(crate) struct McpToolCatalogFetchTicket {
+    pub(crate) tool_list_revision: Option<ToolListRevision>,
     generation: u64,
 }
 
@@ -102,7 +106,10 @@ impl McpToolCatalogCache {
         let entry = lock_unpoisoned(&self.entries)
             .get_or_insert(identity, || Arc::new(ToolCatalogCacheEntry::default()))
             .clone();
-        Some(McpToolCatalogCacheContext { entry })
+        Some(McpToolCatalogCacheContext {
+            entry,
+            track_tool_list_changes: false,
+        })
     }
 }
 
@@ -116,6 +123,16 @@ impl Default for ToolCatalogCacheEntry {
 }
 
 impl McpToolCatalogCacheContext {
+    fn accepts_snapshot(&self, snapshot: &ToolCatalogSnapshot) -> bool {
+        // Enabling refresh must not reuse a catalog published without notification tracking.
+        snapshot
+            .tool_list_revision
+            .as_ref()
+            .map_or(!self.track_tool_list_changes, |revision| {
+                revision.current() == 0
+            })
+    }
+
     pub(crate) fn has_tools(&self) -> bool {
         self.current_revision_if(|_| true).is_some()
     }
@@ -129,6 +146,7 @@ impl McpToolCatalogCacheContext {
         let state = lock_unpoisoned(&self.entry.state);
         let snapshot = state.snapshot.as_ref()?;
         (!state.disabled_by_server
+            && self.accepts_snapshot(snapshot)
             && !snapshot.tools.is_empty()
             && snapshot.published_at.elapsed() <= TOOL_CATALOG_CACHE_TTL
             && accepts_tools(&snapshot.tools))
@@ -142,10 +160,10 @@ impl McpToolCatalogCacheContext {
     ) -> Instant {
         let mut state = lock_unpoisoned(&self.entry.state);
         if state.disabled_by_server
-            || state
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.published_at.elapsed() <= TOOL_CATALOG_CACHE_TTL)
+            || state.snapshot.as_ref().is_some_and(|snapshot| {
+                self.accepts_snapshot(snapshot)
+                    && snapshot.published_at.elapsed() <= TOOL_CATALOG_CACHE_TTL
+            })
         {
             return default_deadline;
         }
@@ -175,7 +193,12 @@ impl McpToolCatalogCacheContext {
         fallback: Option<Vec<ToolInfo>>,
     ) -> Option<Vec<ToolInfo>> {
         let state = lock_unpoisoned(&self.entry.state);
-        if state.disabled_by_server {
+        if state.disabled_by_server
+            || state
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| !self.accepts_snapshot(snapshot))
+        {
             return None;
         }
         state
@@ -188,6 +211,7 @@ impl McpToolCatalogCacheContext {
 
     pub(crate) fn begin_fetch(&self) -> McpToolCatalogFetchTicket {
         McpToolCatalogFetchTicket {
+            tool_list_revision: None,
             generation: self
                 .entry
                 .next_fetch_generation
@@ -219,6 +243,7 @@ impl McpToolCatalogCacheContext {
         state.snapshot = Some(ToolCatalogSnapshot {
             tools,
             published_at: Instant::now(),
+            tool_list_revision: ticket.tool_list_revision,
         });
     }
 }
